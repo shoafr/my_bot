@@ -12,7 +12,7 @@ controller_manager:
 diff_cont:
   ros__parameters:
 
-    publish_rate: 30.0 # Josh set this higher than controller_manager update rate (30Hz) so that it definitely "catches" each loop
+    publish_rate: 50.0 # Josh set this higher than controller_manager update rate (30Hz) so that it definitely "catches" each loop
 
     base_frame_id: base_link
 
