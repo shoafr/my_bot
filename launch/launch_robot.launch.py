@@ -35,7 +35,7 @@ def generate_launch_description():
     controller_manager = Node(
         package="controller_manager",
         executable="ros2_control_node",
-        parameters=[{'robot_description': robot_description},
+        parameters=[{'robot_state_publisher': robot_description},
                     controller_params_file]
     )
     
@@ -44,7 +44,7 @@ def generate_launch_description():
     diff_drive_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["diff_cont", "-c", "controller_manager"],
+        arguments=["diff_cont"],
     )
 
     delayed_diff_drive_spawner = RegisterEventHandler(
@@ -57,7 +57,7 @@ def generate_launch_description():
     joint_broad_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["joint_broad", "--controller-manager", "/controller_manager"],
+        arguments=["joint_broad"],
     )
 
     delayed_joint_broad_spawner = RegisterEventHandler(
