@@ -73,6 +73,5 @@ def generate_launch_description():
         rsp,
         delayed_controller_manager,
         delayed_diff_drive_spawner,
-        diff_drive_spawner,
-        joint_broad_spawner
+        delayed_joint_broad_spawner
     ])
