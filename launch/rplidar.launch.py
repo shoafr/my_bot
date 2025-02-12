@@ -20,14 +20,5 @@ def generate_launch_description():
                 'scan_mode': 'Standard',
             }]
         ),
-        
-
-        Node(
-            package='laser_filters',
-            executable='scan_to_scan_filter_chain',
-            name='lidar_filter',
-            parameters=[os.path.join(get_package_share_directory('my_bot'), 'config', 'lidar_filter.yaml')],
-            remappings=[('/scan', '/filtered_scan')]
-        )
 
     ])
