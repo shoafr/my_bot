@@ -29,7 +29,7 @@ def generate_launch_description():
             parameters=[[
                 os.path.join(get_package_share_directory('my_bot'), 'config', 'lidar_filter.yaml')
             ]],
-            remappings=[('/scan', '/filtered_scan')]
+            remappings=[('scan', 'filtered_scan')]
         )
 
     ])
