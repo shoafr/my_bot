@@ -1,6 +1,7 @@
 import os
 from launch import LaunchDescription
 from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory 
 
 def generate_launch_description():
 
@@ -25,7 +26,9 @@ def generate_launch_description():
             package='laser_filters',
             executable='scan_to_scan_filter_chain',
             name='lidar_filter',
-            parameters=[os.path.join(get_package_share_directory('my_bot'), 'config', 'lidar_filter.yaml')],
+            parameters=[[
+                os.path.join(get_package_share_directory('my_bot'), 'config', 'lidar_filter.yaml')
+            ]],
             remappings=[('/scan', '/filtered_scan')]
         )
 
