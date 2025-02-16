@@ -56,8 +56,13 @@ def generate_launch_description():
 
     # Run the spawner node from the gazebo_ros package. The entity name doesn't really matter if you only have a single robot.
     spawn_entity = Node(package='gazebo_ros', executable='spawn_entity.py',
-                        arguments=['-topic', 'robot_description',
-                                   '-entity', 'my_bot'],
+                        arguments=[
+                            '-topic', 'robot_description',
+                            '-entity', 'my_bot',
+                            '-x', '0',
+                            '-y', '0',
+                            '-z', '0.05'  # This sets the robot's starting height
+                        ],
                         output='screen')
     
     diff_drive_spawner = Node(
@@ -72,6 +77,11 @@ def generate_launch_description():
         arguments=["joint_broad"],
     )
 
+    # initial_move_node = Node(
+    #     package="initial_move",
+    #     executable="initial_move",  # Ensure this script exists in your package
+    #     output="screen"
+    # )
 
     # Launch them all!
     return LaunchDescription([
@@ -82,4 +92,5 @@ def generate_launch_description():
         spawn_entity,
         diff_drive_spawner,
         joint_broad_spawner
+        # initial_move_node
     ])
