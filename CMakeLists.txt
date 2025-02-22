@@ -37,4 +37,11 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+# Install scripts
+install(
+  PROGRAMS
+  scripts/move_to_tag.py  # This ensures the script is installed correctly
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_package()
