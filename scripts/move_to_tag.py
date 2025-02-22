@@ -91,12 +91,12 @@ class MoveToTagNode(Node):
         box_area = box_width * box_height
         image_area = self.image_width * self.image_height
 
-        # ID logic: detection.id is typically an array (like detection.id[0]) in apriltag_msgs
-        if len(detection.id) == 0:
-            self.get_logger().warn("Tag detection has no ID array. Stopping.")
-            self.stop_robot()
-            return
-        tag_id = detection.id[0]
+        # # ID logic: detection.id is typically an array (like detection.id[0]) in apriltag_msgs
+        # if len(detection.id) == 0:
+        #     self.get_logger().warn("Tag detection has no ID array. Stopping.")
+        #     self.stop_robot()
+        #     return
+        tag_id = detection.id
 
         # State Machine
         if self.state == 'APPROACH_FIRST':
