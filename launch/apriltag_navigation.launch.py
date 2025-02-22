@@ -37,17 +37,16 @@ def generate_launch_description():
         ]
     )
 
-    # # Movement node that listens to AprilTag detections
-    # move_to_tag = Node(
-    #     package=package_name,
-    #     executable='move_to_tag.py',
-    #     name='move_to_tag',
-    #     output='screen'
-    # )
+    follow_tag_node = Node(
+        package='my_bot',
+        executable='move_to_tag.py',
+        name='follow_tag_node',
+        output='screen'
+    )
 
     return LaunchDescription([
         launch_robot,
         camera_launch,
-        apriltag_node
-        # move_to_tag
+        apriltag_node,
+        follow_tag_node
     ])
