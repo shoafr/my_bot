@@ -1,43 +1,62 @@
 #!/usr/bin/env python3
 """
-apriltag_static_broadcaster.py
+apriltag_static_broadcaster.py (Mobile Camera Version)
 
-Reads a YAML config of AprilTag positions in the 'map' frame and
-publishes static transforms: map -> tag_<id>
+Publishes static transforms for each tag, i.e. map -> tag_<id>,
+based on the coordinates in your 'tag_positions.yaml' file.
 
-Place this in your package (e.g., my_bot/scripts/). Make it executable
-and install it via CMakeLists. Then launch it or run it directly to see
-the static frames in RViz.
+Assumptions:
+- The camera is on a moving robot, so 'map -> camera_link_optical' is NOT static.
+- Each AprilTag is at a known, fixed pose in the map. We have (x, y, yaw) from your config.
+
+Usage:
+1) Place this file in 'my_bot/scripts/apriltag_static_broadcaster.py'
+2) Make it executable & declare in your CMakeLists for installation
+3) Provide a 'tag_positions.yaml' with your known tag <id> positions
+4) Launch or run it. The tags appear in RViz under frames 'tag<id>', all parented by 'map'.
 """
 
 import rclpy
 from rclpy.node import Node
-from rclpy.parameter import Parameter
 import yaml
 import math
 
-from tf2_ros.static_transform_broadcaster import StaticTransformBroadcaster
 from geometry_msgs.msg import TransformStamped, Quaternion
+from tf2_ros.static_transform_broadcaster import StaticTransformBroadcaster
 
-def euler_to_quaternion(yaw):
+def euler_to_quaternion(yaw, pitch=0.0, roll=0.0):
     """
-    Convert yaw (in radians) to a Quaternion (REP-103).
-    We'll assume roll = pitch = 0, just a planar rotation.
+    Convert yaw/pitch/roll (in radians) to a Quaternion (REP-103).
+    By default, pitch=roll=0 for planar rotation. This is enough for 2D ground setups.
     """
     q = Quaternion()
-    q.z = math.sin(yaw / 2.0)
-    q.w = math.cos(yaw / 2.0)
+    half_roll  = roll  * 0.5
+    half_pitch = pitch * 0.5
+    half_yaw   = yaw   * 0.5
+
+    sin_r = math.sin(half_roll)
+    cos_r = math.cos(half_roll)
+    sin_p = math.sin(half_pitch)
+    cos_p = math.cos(half_pitch)
+    sin_y = math.sin(half_yaw)
+    cos_y = math.cos(half_yaw)
+
+    # Z-Y-X rotation
+    q.w = cos_r*cos_p*cos_y + sin_r*sin_p*sin_y
+    q.x = sin_r*cos_p*cos_y - cos_r*sin_p*sin_y
+    q.y = cos_r*sin_p*cos_y + sin_r*cos_p*sin_y
+    q.z = cos_r*cos_p*sin_y - sin_r*sin_p*cos_y
     return q
 
 class AprilTagStaticBroadcaster(Node):
     def __init__(self):
         super().__init__('apriltag_static_broadcaster')
 
-        # Declare parameter to pass in the YAML path
+        # Parameter for YAML path
         self.declare_parameter('tag_positions_file', 'tag_positions.yaml')
         param_file = self.get_parameter('tag_positions_file').get_parameter_value().string_value
 
-        # Load YAML
+        # Load the YAML
         try:
             with open(param_file, 'r') as f:
                 data = yaml.safe_load(f)
@@ -45,40 +64,39 @@ class AprilTagStaticBroadcaster(Node):
             self.get_logger().error(f"Failed to load {param_file}: {e}")
             return
 
-        if 'tags' not in data:
+        tags = data.get('tags', None)
+        if not tags:
             self.get_logger().error("No 'tags' dictionary found in YAML.")
             return
 
-        tags = data['tags']
-
-        # Create StaticTransformBroadcaster
+        # Create the StaticTransformBroadcaster
         self.tf_broadcaster = StaticTransformBroadcaster(self)
 
         transforms = []
+
+        # For each AprilTag ID, publish map -> tag<id>
         for tag_id, pose in tags.items():
-            # Extract x, y, yaw from the YAML for each tag
-            x = pose.get('x', 0.0)
-            y = pose.get('y', 0.0)
+            x   = pose.get('x', 0.0)
+            y   = pose.get('y', 0.0)
             yaw = pose.get('yaw', 0.0)
 
             transform = TransformStamped()
             transform.header.stamp = self.get_clock().now().to_msg()
-            transform.header.frame_id = "map"               # Parent is map
-            transform.child_frame_id = f"tag_{tag_id}"      # Child is e.g. tag_5
+            transform.header.frame_id = "map"          # parent: map
+            transform.child_frame_id = f"tag{tag_id}"  # child: e.g. tag5
 
             transform.transform.translation.x = x
             transform.transform.translation.y = y
-            transform.transform.translation.z = 0.0  # presumably on the ground
+            transform.transform.translation.z = 0.0
 
-            q = euler_to_quaternion(yaw)
+            q = euler_to_quaternion(yaw)  # roll=0, pitch=0
             transform.transform.rotation = q
 
             transforms.append(transform)
-
-            self.get_logger().info(f"Publishing static transform map -> tag_{tag_id} at x={x}, y={y}, yaw={yaw}")
+            self.get_logger().info(f"map->tag{tag_id}: x={x:.3f}, y={y:.3f}, yaw={yaw:.3f}")
 
         self.tf_broadcaster.sendTransform(transforms)
-        self.get_logger().info("All static transforms published. Node will spin...")
+        self.get_logger().info("All static transforms (map->tags) published. Node will spin...")
 
 def main(args=None):
     rclpy.init(args=args)
