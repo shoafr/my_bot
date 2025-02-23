@@ -33,6 +33,19 @@ if(BUILD_TESTING)
 endif()
 
 install(
+  PROGRAMS
+    scripts/apriltag_static_broadcaster.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  PROGRAMS
+    scripts/apriltag_localization.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+
+install(
   DIRECTORY config description launch worlds
   DESTINATION share/${PROJECT_NAME}
 )
