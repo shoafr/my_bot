@@ -2,40 +2,49 @@
 """
 apriltag_localization.py
 
-1) Subscribes to /detections (apriltag_msgs/AprilTagDetectionArray)
-2) For each detected tag ID, we look up these transforms:
-   - map -> tag<ID>  (published by your static broadcaster)
+1) Subscribes to /detections (AprilTagDetectionArray) from apriltag_ros
+2) For each detected tag ID, looks up:
+   - map -> tag<ID>_static  (the static frame you renamed in your static broadcaster)
    - camera_link_optical -> tag<ID> (published by apriltag_ros)
-3) We invert 'camera_link_optical -> tag<ID>' => 'tag<ID> -> camera_link_optical'
-4) Then multiply 'map -> tag<ID>' * 'tag<ID> -> camera_link_optical' => 'map -> camera_link_optical'
-5) Broadcast that dynamic transform. 
-   => So in RViz, you can set Fixed Frame = 'map' and watch your camera frame move as tags are detected.
+3) We invert camera_link_optical->tag<ID> => tag<ID>->camera_link_optical
+4) Multiply map->tag<ID>_static * tag<ID>->camera_link_optical => map->camera_link_optical
+5) Broadcast that dynamic transform for real-time visualization in RViz
 
-Note: 
-- The user must have a static transform node for map->tag<ID> 
-- apriltag_ros must be publishing camera_link_optical->tag<ID>
-- The camera_link_optical is on a mobile robot, so this transform changes dynamically.
+We do NOT move the robot. This only publishes the robot's camera frame in 'map'.
 
-This script does not command motion. It's purely for updating the 'map -> camera_link_optical' transform in real-time.
+IMPORTANT:
+- The static broadcaster now uses 'tag{ID}_static' as the child frame.
+- apriltag_ros uses 'tag{ID}' as child frame. So effectively 'tag5_static' != 'tag5' in TF. 
+- We unify them here in code.
+
+Steps to use:
+1) Launch your static transforms node, which publishes map->tag5_static
+2) Launch apriltag_ros, which publishes camera_link_optical->tag5
+3) Run this node. 
+4) In RViz, set 'map' as the Fixed Frame, see 'camera_link_optical' update in real-time.
 """
 
 import rclpy
 from rclpy.node import Node
+
 from apriltag_msgs.msg import AprilTagDetectionArray
 from geometry_msgs.msg import TransformStamped, Transform
 import tf_transformations as tft
 
 from tf2_ros import TransformBroadcaster, Buffer, TransformListener, LookupException
-
 import time
 
 def invert_transform(transform_in: Transform) -> Transform:
     """
     Inverts a geometry_msgs/Transform using tf_transformations.
     """
-    # Convert to 4x4 matrix
-    trans = (transform_in.translation.x, transform_in.translation.y, transform_in.translation.z)
-    rot   = (transform_in.rotation.x, transform_in.rotation.y, transform_in.rotation.z, transform_in.rotation.w)
+    trans = (transform_in.translation.x,
+             transform_in.translation.y,
+             transform_in.translation.z)
+    rot   = (transform_in.rotation.x,
+             transform_in.rotation.y,
+             transform_in.rotation.z,
+             transform_in.rotation.w)
 
     mat = tft.quaternion_matrix(rot)
     mat[0, 3] = trans[0]
@@ -44,11 +53,10 @@ def invert_transform(transform_in: Transform) -> Transform:
 
     inv = tft.inverse_matrix(mat)
 
-    # Decompose back to Transform
     out = Transform()
-    out.translation.x = inv[0,3]
-    out.translation.y = inv[1,3]
-    out.translation.z = inv[2,3]
+    out.translation.x = inv[0, 3]
+    out.translation.y = inv[1, 3]
+    out.translation.z = inv[2, 3]
     q = tft.quaternion_from_matrix(inv)
     out.rotation.x = q[0]
     out.rotation.y = q[1]
@@ -59,6 +67,7 @@ def invert_transform(transform_in: Transform) -> Transform:
 def multiply_transforms(t1: Transform, t2: Transform) -> Transform:
     """
     Composes geometry_msgs/Transform t1 * t2 => t_out.
+    E.g. map->tag5_static * tag5->camera_link_optical = map->camera_link_optical
     """
     trans1 = (t1.translation.x, t1.translation.y, t1.translation.z)
     rot1   = (t1.rotation.x, t1.rotation.y, t1.rotation.z, t1.rotation.w)
@@ -91,7 +100,7 @@ class AprilTagLocalization(Node):
     def __init__(self):
         super().__init__('apriltag_localization')
 
-        # We'll store a TF buffer & listener for looking up transforms
+        # We'll store a TF buffer & listener to look up transforms
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
@@ -106,11 +115,11 @@ class AprilTagLocalization(Node):
             10
         )
 
-        # Rate limit the updates
+        # Rate limit the updates to 5 Hz
         self.last_update_time = time.time()
-        self.update_rate = 5.0  # up to 5 Hz
+        self.update_rate = 5.0
 
-        self.get_logger().info("AprilTagLocalization node started. Listening to /detections...")
+        self.get_logger().info("AprilTagLocalization started. Listening to /detections...")
 
     def on_detections(self, msg: AprilTagDetectionArray):
         now = time.time()
@@ -119,55 +128,48 @@ class AprilTagLocalization(Node):
         self.last_update_time = now
 
         if not msg.detections:
-            # no tags => no transform update
-            return
+            return  # no tags => no update
 
-        # For demonstration, we'll just use the first detection
+        # Just use the first detection
         detection = msg.detections[0]
+        tag_id = detection.id  # e.g. 5
 
-        # detection.id is int, e.g. 5
-        tag_id = detection.id
-        # We assume apriltag_ros uses parent= camera_link_optical, child= tag5 (or similar)
-        # So the transform is camera_link_optical->tag5
-
-        tag_frame = f"tag{tag_id}"  # must match what's in apriltag_ros
+        # The static transform is: map->tag5_static
+        # The apriltag_ros transform is: camera_link_optical->tag5
+        static_tag_frame = f"tag{tag_id}_static"
+        dynamic_tag_frame = f"tag{tag_id}"
 
         try:
-            # 1) look up map->tag{tag_id} (static) from your apriltag_static_broadcaster
-            map_to_tag = self.tf_buffer.lookup_transform(
-                'map',        # target_frame
-                tag_frame,    # source_frame
+            # 1) map->tag5_static
+            map_to_tag_static = self.tf_buffer.lookup_transform(
+                'map',
+                static_tag_frame,
                 rclpy.time.Time()
             )
 
-            # 2) look up camera_link_optical->tag{tag_id} (published by apriltag_ros)
-            #    We suspect it might be 'camera_link_optical' as parent, 'tag5' child
-            #    So we want the transform from camera_link_optical to tag5
+            # 2) camera_link_optical->tag5
             cam_to_tag = self.tf_buffer.lookup_transform(
-                'camera_link_optical',  # target_frame
-                tag_frame,              # source_frame
+                'camera_link_optical',
+                dynamic_tag_frame,
                 rclpy.time.Time()
             )
 
-            # In the typical TF sense, the transform from camera_link_optical->tag5 is:
-            #   parent = camera_link_optical
-            #   child = tag5
-
-            # We want to invert that to get tag5->camera_link_optical
+            # Invert camera_link_optical->tag5 => tag5->camera_link_optical
             tag_to_cam = invert_transform(cam_to_tag.transform)
 
-            # Now compose: map->tag5 * tag5->camera_link_optical => map->camera_link_optical
-            map_to_cam = multiply_transforms(map_to_tag.transform, tag_to_cam)
+            # Compose map->tag5_static * tag5->camera_link_optical => map->camera_link_optical
+            map_to_cam = multiply_transforms(map_to_tag_static.transform, tag_to_cam)
 
-            # Finally, broadcast map->camera_link_optical
-            transform_stamped = TransformStamped()
-            transform_stamped.header.stamp = self.get_clock().now().to_msg()
-            transform_stamped.header.frame_id = 'map'
-            transform_stamped.child_frame_id = 'camera_link_optical'
-            transform_stamped.transform = map_to_cam
+            # Broadcast map->camera_link_optical
+            tf_stamped = TransformStamped()
+            tf_stamped.header.stamp = self.get_clock().now().to_msg()
+            tf_stamped.header.frame_id = 'map'
+            tf_stamped.child_frame_id = 'camera_link_optical'
+            tf_stamped.transform = map_to_cam
 
-            self.tf_broadcaster.sendTransform(transform_stamped)
-            self.get_logger().debug(f"Updated map->camera_link_optical from tag ID {tag_id}")
+            self.tf_broadcaster.sendTransform(tf_stamped)
+
+            self.get_logger().debug(f"Updated map->camera_link_optical from tag{tag_id}")
 
         except LookupException as ex:
             self.get_logger().warn(f"TF lookup failed: {ex}")

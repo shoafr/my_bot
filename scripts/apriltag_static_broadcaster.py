@@ -83,7 +83,7 @@ class AprilTagStaticBroadcaster(Node):
             transform = TransformStamped()
             transform.header.stamp = self.get_clock().now().to_msg()
             transform.header.frame_id = "map"          # parent: map
-            transform.child_frame_id = f"tag{tag_id}"  # child: e.g. tag5
+            transform.child_frame_id = f"tag{tag_id}_static"  # child: e.g. tag5
 
             transform.transform.translation.x = x
             transform.transform.translation.y = y
