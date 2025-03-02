@@ -1,34 +1,43 @@
 #!/usr/bin/env python3
 """
-move_to_tag.py
+move_to_tag.py (Transform-based version)
 
-Robot flow:
+Robot flow (example):
 1) APPROACH_FIRST:
-   - Move forward & steer towards the first AprilTag detection
-   - Once bounding-box area > threshold => transition to ROTATE
+   - We attempt to see the first AprilTag in the /detections array.
+   - Once we lock onto a "first_tag_id", we do a TF lookup from 'camera_link_optical' -> that tag.
+   - Move forward until distance < distance_threshold => switch to ROTATE
 
 2) ROTATE:
-   - Rotate in place indefinitely
-   - Once a NEW tag (different ID) is detected => transition to APPROACH_SECOND
+   - Rotate in place until we detect a *new* tag ID (like "second tag" ID).
+   - Switch to APPROACH_SECOND.
 
 3) APPROACH_SECOND:
-   - Approach the newly-detected second tag (like the first stage)
-   - Optionally, you could define another bounding-box threshold to stop again.
+   - Same as approach first, but for the second tag ID.
+   - Move forward until distance < threshold, or do something else.
 
-Feel free to tweak bounding-box thresholds, speeds, and logic to match your robot.
+Key changes from bounding-box version:
+- We no longer compute box_area or bounding-box corners.
+- We measure distance from camera->tag by reading the transform's translation.
+- We define a distance_threshold instead of close_area_ratio.
+
+You can further refine the heading control by computing angles from the transform,
+but for simplicity, we'll do a rough center alignment by rotating if we can't see the tag, etc.
 """
 
 import rclpy
 from rclpy.node import Node
 from apriltag_msgs.msg import AprilTagDetectionArray
 from geometry_msgs.msg import Twist
+from tf2_ros import Buffer, TransformListener, LookupException, ExtrapolationException
+import math
 import time
 
 class MoveToTagNode(Node):
     def __init__(self):
         super().__init__('move_to_tag_node')
 
-        # Subscribe to /detections
+        # Subscribe to /detections to find out which tag ID(s) are in view
         self.subscription = self.create_subscription(
             AprilTagDetectionArray,
             '/detections',
@@ -38,131 +47,141 @@ class MoveToTagNode(Node):
         # Publisher to /cmd_vel
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
-        # State machine states
-        self.state = 'APPROACH_FIRST'   # or 'ROTATE', 'APPROACH_SECOND'
+        # TF buffer/listener so we can lookup camera->tag transforms
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        # Storage for first tag ID
+        # State machine states
+        self.state = 'APPROACH_FIRST'  # 'ROTATE', 'APPROACH_SECOND'
         self.first_tag_id = None
 
-        # Basic camera info (tweak if camera is bigger/smaller)
-        self.image_width = 640
-        self.image_height = 480
-        self.half_width = self.image_width / 2.0
+        # Speeds and thresholds
+        self.linear_speed = 0.1      # Forward speed (m/s)
+        self.rotate_speed = 0.3      # Rotation speed (rad/s)
+        self.distance_threshold = 0.3  # Stop distance in meters
+        # You can tweak the distance threshold to decide "close enough."
 
-        # Speed and gains
-        self.linear_speed = 0.1
-        self.angular_gain = 0.002
+        # For steering control, we'll keep it simple:
+        self.angular_speed_factor = 1.0  # factor for small left-right corrections (optional)
 
-        # Area threshold: if bounding-box area is greater than X% of total image => close enough
-        self.close_area_ratio = 0.20  # 20% of image area => "close"
-
-        # Rotation speed
-        self.rotate_speed = 0.3  # rad/s (positive = CCW)
-
-        # Logging
         self.get_logger().info("MoveToTagNode started. State=APPROACH_FIRST")
+
+        # Timer or main loop is not strictly needed if we rely on the detection_callback
+        # to trigger logic. But we do everything in detection_callback for simplicity.
 
     def detection_callback(self, msg: AprilTagDetectionArray):
         """
-        Main logic callback for AprilTag detections.
+        We see which tag IDs are present. If we haven't locked a first_tag_id, pick one.
+        Then we do different actions depending on the state.
         """
+        # If no detections, handle states that need to spin or stop
         if not msg.detections:
-            # No detections => if we're rotating or approaching, we might just keep doing it
             if self.state == 'APPROACH_FIRST':
-                # We'll keep going forward, but no tag => better to stop
                 self.stop_robot()
             elif self.state == 'ROTATE':
-                # Keep rotating until new tag is found
                 self.rotate_in_place()
             elif self.state == 'APPROACH_SECOND':
                 self.stop_robot()
             return
 
-        # If we do see a detection, let's take the first in the array
+        # Let's grab the first detection
         detection = msg.detections[0]
-
-        # Calculate bounding-box area
-        if len(detection.corners) < 4:
-            self.stop_robot()
-            return
-
-        box_width = abs(detection.corners[0].x - detection.corners[2].x)
-        box_height = abs(detection.corners[0].y - detection.corners[2].y)
-        box_area = box_width * box_height
-        image_area = self.image_width * self.image_height
-
-        # # ID logic: detection.id is typically an array (like detection.id[0]) in apriltag_msgs
-        # if len(detection.id) == 0:
-        #     self.get_logger().warn("Tag detection has no ID array. Stopping.")
-        #     self.stop_robot()
-        #     return
         tag_id = detection.id
 
-        # State Machine
         if self.state == 'APPROACH_FIRST':
-            # If we haven't stored the first tag ID, do so now
+            # Lock onto first tag ID if none is set
             if self.first_tag_id is None:
                 self.first_tag_id = tag_id
                 self.get_logger().info(f"First tag ID locked: {self.first_tag_id}")
 
-            # Approach the first tag
-            self.approach_tag(detection)
-
-            # Check if we are close enough
-            if box_area > self.close_area_ratio * image_area:
-                # Switch to ROTATE state
-                self.get_logger().info("Close to first tag. Switching to ROTATE state.")
-                self.state = 'ROTATE'
-                # Stop moving forward
-                self.stop_robot()
+            # Approach this first tag using TF distance
+            self.approach_tag_by_tf(self.first_tag_id)
 
         elif self.state == 'ROTATE':
-            # We are rotating in place. Keep rotating until we see a *different* tag
+            # If we see a *different* tag ID, that becomes the second tag
             if tag_id != self.first_tag_id:
-                # Found a new tag! Approach it
-                self.get_logger().info(f"New tag ID {tag_id} detected. Switching to APPROACH_SECOND.")
+                self.get_logger().info(f"New tag ID {tag_id} detected! Switching to APPROACH_SECOND.")
                 self.state = 'APPROACH_SECOND'
                 self.stop_robot()
-                # Approach second tag on next callback
+                # Next callback will approach this second tag
             else:
-                # Same old tag => keep rotating
+                # Keep rotating until we see a different tag
                 self.rotate_in_place()
 
         elif self.state == 'APPROACH_SECOND':
-            # Approach the newly detected second tag
-            self.approach_tag(detection)
-            # Optionally, you could also add a second bounding-box threshold here
-            # if box_area > something => do something else
-            pass
+            # Approach this newly discovered second tag ID
+            self.approach_tag_by_tf(tag_id)
+            # (Optionally define a second threshold or next state if you want to stop again.)
 
-    def approach_tag(self, detection):
+    def approach_tag_by_tf(self, desired_tag_id):
         """
-        Move forward, steering based on the horizontal error from image center.
+        Look up the transform from camera_link_optical -> tag<ID>.
+        If found, compute distance. If > threshold => move forward, else stop and switch state.
         """
-        # Compute approximate horizontal center of bounding box
-        sum_x = 0.0
-        for corner in detection.corners:
-            sum_x += corner.x
-        average_x = sum_x / 4.0
+        # Construct the TF frame name for this tag
+        # e.g. "tag36h11:5" or "tag5" depending on your apriltag_ros config
+        # For simplicity, let's assume it's just "tag{ID}" or "tag5"
+        tag_frame = f"tag{desired_tag_id}"
 
-        error_x = average_x - self.half_width
+        try:
+            # Lookup the transform from camera_link_optical to tagX
+            transform_stamped = self.tf_buffer.lookup_transform(
+                'camera_link_optical',
+                tag_frame,
+                rclpy.time.Time()
+            )
 
-        twist = Twist()
-        twist.linear.x = self.linear_speed
-        twist.angular.z = -error_x * self.angular_gain
-        self.cmd_vel_pub.publish(twist)
+            # Extract translation
+            tx = transform_stamped.transform.translation.x
+            ty = transform_stamped.transform.translation.y
+            tz = transform_stamped.transform.translation.z
+
+            distance = math.sqrt(tx*tx + ty*ty + tz*tz)
+
+            # Check if we're close enough
+            if distance > self.distance_threshold:
+                # Move forward
+                # Optionally, we might do a small left-right correction
+                # if we want to keep the tag centered. For example:
+                # Turn left if ty is positive, turn right if ty is negative
+                # or you can do a simpler approach => just go straight
+                twist = Twist()
+                twist.linear.x = self.linear_speed
+
+                # Let's do a mild turning to center the tag:
+                # If the tag is to the left (ty>0?), turn left a bit
+                # Actually, if we want to keep tag in front, we do
+                # an angular z = -some_factor * ty perhaps
+                twist.angular.z = -self.angular_speed_factor * ty
+                self.cmd_vel_pub.publish(twist)
+            else:
+                # We are close => switch to next state if we're in APPROACH_FIRST
+                if self.state == 'APPROACH_FIRST':
+                    self.get_logger().info("Reached first tag. Switching to ROTATE.")
+                    self.state = 'ROTATE'
+                    self.stop_robot()
+                elif self.state == 'APPROACH_SECOND':
+                    # Optionally define a next step, or just remain in second approach
+                    self.get_logger().info("Reached second tag (approx). Stopping.")
+                    self.stop_robot()
+                    # If you want a new state, define it here.
+
+        except (LookupException, ExtrapolationException) as ex:
+            self.get_logger().warn(f"TF lookup failed for {tag_frame}: {ex}")
+            # We might spin in place or stop:
+            self.rotate_in_place()
 
     def rotate_in_place(self):
         """
-        Rotate in place CCW at rotate_speed.
+        Rotate in place
         """
         twist = Twist()
-        twist.angular.z = self.rotate_speed  # CCW
+        twist.angular.z = self.rotate_speed
         self.cmd_vel_pub.publish(twist)
 
     def stop_robot(self):
         """
-        Publish zero velocities to stop.
+        Publish zero velocities
         """
         twist = Twist()
         self.cmd_vel_pub.publish(twist)
